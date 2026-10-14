@@ -52,6 +52,8 @@ Labels: wayfinder:map
 - [画面获取与观测方案已确定（04-visual-observation，已 resolved）](.scratch/wayfinding/issues/04-visual-observation.md)：主路径 Playwright Python 在 headless Chromium 中对 `canvas` 做元素截图（CDP 合成后像素，无需 X server；SwiftShader 软件 WebGL 由 Playwright 自动启用）；仅 headless WebGL 探测失败时降级为 Xvfb + mss 整桌面截图；`canvas.toDataURL` 因 `preserveDrawingBuffer=false` 默认行为否决。回合制简化：每 step = 按键 → 等 HUD `TurnCount` 变化 → 截图，无固定 FPS，不做帧堆叠；超时重试一次等待，再超时 `truncated=True` 中止；启动做 webgl2 门禁探测，失败硬阻塞。仍满足"以游戏画面为观测"（HUD 仅用于同步时机，不拼入观测）。残余风险：截图延迟、SwiftShader 渲染帧率、TurnCount 超时阈值均待实现期实测。
 - [per-game 适配脚本接口已定型（07-per-game-interface，已 resolved）](.scratch/wayfinding/issues/07-per-game-interface.md)：框架 `BrowserGameEnv(gym.Env)` + 适配器 `GameAdapter` 协议（20 项：空间/启动声明/reset_keys/seed_baselines/静态动作查表+对话框握手/detect_phase/detect_dialog/read_hud/原子 on_frame）；适配器拥有奖励基线与终局锁存，框架拥有浏览器与注入时序，OCR 数值永不进观测；step 完成屏障四选一且等待循环内查终局（防死亡误判超时）；reset 有界轮询+重建重试；`ENV_REGISTRY["ruggrogue-v1"]` 经 `make_adapter()` 工厂接入；B1–B4（WASM 缺失/OCR 冒烟/TurnCount 探针/WebGL 门禁）全部硬阻塞暴露；llmapi 红队 14 项已采纳回写。
 
+- [训练方案已确定：PPO 首选 + DQN 备选（08-training-plan，已 resolved）](.scratch/wayfinding/issues/08-training-plan.md)：PPO + CnnPolicy（NatureCNN）；灰度 84×84 uint8 HWC（env 侧）→ VecTransposeImage → CHW，SB3 内部 /255；n_steps=1024、ent_coef=0.01 起始（按监控动态调）、total_timesteps=400_000（红队修正：500k 在 2 步/秒下仅采样 69.4h，预算不闭合）；单 env 起步、50k 步后实测再定并行；检查点每 10k 步 + tensorboard 必开；seed 0（游戏不可 seed，跨 run 方差声明）；DQN 备选参数已具名（buffer 50k≈0.7GB，target 间隔 5k）；中止规则：fault 率/150k 步无学习信号/墙钟 72h/数值发散；墙钟耗尽只做安全停机不伪造奖励。实现期硬门禁：10k 步端到端吞吐校准 + 84×84 输入可辨识度人工抽查。gamma=0.99 的远期失效记为已知局限（v1 优化下潜/生存）。llmapi 红队 12 项已采纳或记录。
+
 ## Not yet specified
 
 1. **首个游戏与运行边界**：平台、许可、输入控制权限、可重置性、训练预算是否满足要求。
