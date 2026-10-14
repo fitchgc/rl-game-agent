@@ -1,249 +1,228 @@
-"""Training entrypoint: train an SB3 agent on a registered game environment.
+"""Training entrypoint: train an SB3 agent on a registered browser game env.
 
-Assembly per wayfinder ticket 08: ENV_REGISTRY factory -> channel-expand
-(84,84)->(84,84,1) -> Monitor -> DummyVecEnv -> VecTransposeImage -> PPO.
-All numbers live in the config file; this module only assembles.
+Usage:
+    .venv/bin/python -m rl_game_agent.train --config configs/ruggrogue_ppo_v1.yaml
+    .venv/bin/python -m rl_game_agent.train --config ... --timesteps 5000 --out runs/smoke
+    .venv/bin/python -m rl_game_agent.train --config ... --resume runs/smoke  # continue
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
+import subprocess
 import sys
 import time
-from collections import Counter, deque
+import urllib.request
 from pathlib import Path
 
-import gymnasium
 import numpy as np
 import yaml
+from gymnasium import ObservationWrapper, spaces
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
-from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.callbacks import (
+    BaseCallback,
+    CheckpointCallback,
+)
+from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage
 
-from .envs import ENV_REGISTRY
-
-log = logging.getLogger("rl_game_agent.train")
+from rl_game_agent.envs import ENV_REGISTRY
 
 
-# --------------------------------------------------------------------------- #
-# Config
-# --------------------------------------------------------------------------- #
-def load_config(path: str | Path) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+class AddChannelDim(ObservationWrapper):
+    """(H, W) grayscale -> (H, W, 1): what ticket 08 specified (HWC)."""
 
-
-# --------------------------------------------------------------------------- #
-# Env assembly
-# --------------------------------------------------------------------------- #
-class _ExpandChannel(gymnasium.Wrapper):
-    """(84, 84) uint8 -> (84, 84, 1) uint8 so SB3 sees HWC image space.
-
-    The adapter's contract keeps frame_shape at (84, 84) (ticket 07); the
-    HWC->CHW transpose ticket 08 assigns to train.py lives here, before
-    VecTransposeImage.
-    """
-
-    def __init__(self, env: gymnasium.Env) -> None:
+    def __init__(self, env):
         super().__init__(env)
         h, w = env.observation_space.shape
-        self.observation_space = gymnasium.spaces.Box(
-            low=0, high=255, shape=(h, w, 1), dtype=np.uint8
-        )
+        self.observation_space = spaces.Box(0, 255, (h, w, 1), np.uint8)
 
-    def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-        return np.expand_dims(obs, -1), info
+    def observation(self, obs):
+        return np.expand_dims(obs, -1)
 
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        return np.expand_dims(obs, -1), reward, terminated, truncated, info
+GAME_URL = "http://localhost:8901/index.html"
 
 
-def build_env(env_name: str, seed: int):
-    """Single env: factory -> channel expand -> Monitor -> DummyVecEnv -> transpose."""
-    if env_name not in ENV_REGISTRY:
-        raise KeyError(f"unknown env {env_name!r}; registered: {sorted(ENV_REGISTRY)}")
-
-    def _make():
-        return Monitor(_ExpandChannel(ENV_REGISTRY[env_name]()))
-
-    vec = DummyVecEnv([_make])
-    vec.seed(seed)
-    vec = VecTransposeImage(vec)
-    vec.reset()
-    return vec
-
-
-# --------------------------------------------------------------------------- #
-# Abort rules (ticket 08) - pure decision function, unit-tested
-# --------------------------------------------------------------------------- #
-def should_abort(
-    fault_rate: float,
-    ocr_uncertain_rate: float,
-    elapsed_s: float,
-    cfg: dict,
-) -> str | None:
-    """Return an abort reason, or None to continue training."""
-    abort = cfg.get("abort", {}) or {}
-    if fault_rate > float(abort.get("fault_rate", 0.20)):
-        return f"fault truncated rate {fault_rate:.2%} exceeds limit"
-    if ocr_uncertain_rate > float(abort.get("ocr_uncertain_rate", 0.30)):
-        return f"OCR uncertain rate {ocr_uncertain_rate:.2%} exceeds limit"
-    cap_h = float(abort.get("wall_clock_hours", 72))
-    if elapsed_s > cap_h * 3600:
-        return f"wall-clock cap {cap_h}h reached (safe stop, no reward fabrication)"
-    return None
+def ensure_game_server(web_dir: Path) -> None:
+    """Make sure the static game server answers; start it if not."""
+    try:
+        urllib.request.urlopen(GAME_URL, timeout=3)
+        return
+    except OSError:
+        pass
+    subprocess.Popen(
+        [sys.executable, "-m", "http.server", "8901", "--directory", str(web_dir)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            urllib.request.urlopen(GAME_URL, timeout=3)
+            return
+        except OSError:
+            continue
+    raise RuntimeError("game server did not come up on :8901")
 
 
-class TrainingGuardCallback(BaseCallback):
-    """Enforces abort rules and logs terminated/truncated/fault distinctly.
+class AbortMonitor(BaseCallback):
+    """Enforce abort rules from the training config.
 
-    Sliding window over finished episodes; reads the adapter's info keys
-    (end_reason, truncated_kind, hud_certain). Returning False stops
-    model.learn() cleanly.
+    Tracks fault-truncated episode rate over a sliding window, non-finite
+    rewards, and a wall-clock cap. Logs terminated/truncated/fault counts
+    distinctly so a stop is never silent about its cause.
     """
 
-    def __init__(self, cfg: dict, verbose: int = 0) -> None:
+    def __init__(self, abort_cfg: dict, verbose: int = 0):
         super().__init__(verbose)
-        abort = cfg.get("abort", {}) or {}
-        self._window = int(abort.get("fault_window_episodes", 50))
-        self._min_episodes = int(abort.get("min_episodes", 10))
-        self._episodes: deque[dict] = deque(maxlen=self._window)
-        self._cfg = cfg
-        self._t0 = time.time()
-        self._outcome_counts: Counter = Counter()
-        self.abort_reason: str | None = None
+        self.cfg = abort_cfg or {}
+        self.t0 = time.time()
+        self.fault_window: list[bool] = []
+        self.window = int(self.cfg.get("fault_window_episodes", 50))
+        self.min_eps = int(self.cfg.get("min_episodes", 10))
+        self.n_episodes = 0
+        self.n_fault = 0
+        self.n_truncated = 0
+        self.n_terminated = 0
 
     def _on_step(self) -> bool:
-        # Non-finite reward: never silently continue.
+        for info in self.locals.get("infos", []):
+            if info.get("terminal_observation") is None and not info.get("TimeLimit.truncated"):
+                continue
+            # One episode ended on this env.
+            self.n_episodes += 1
+            kind = info.get("truncated_kind")  # None for terminated (win/death)
+            is_fault = kind in ("fault", "ocr")
+            self.fault_window.append(is_fault)
+            self.fault_window = self.fault_window[-self.window :]
+            self.n_fault += is_fault
+            if kind:
+                self.n_truncated += 1
+            else:
+                self.n_terminated += 1
+        # Non-finite reward guard.
         rewards = self.locals.get("rewards")
-        if rewards is not None and not np.all(np.isfinite(rewards)):
-            self.abort_reason = "non-finite reward detected"
-            log.critical("ABORT: %s", self.abort_reason)
-            return False
+        if rewards is not None:
+            import numpy as np
 
-        infos = self.locals.get("infos", [])
-        for info in infos:
-            ep = info.get("episode")
-            if ep is None:
-                continue  # Monitor only adds this at episode end
-            outcome = {
-                "end_reason": info.get("end_reason", "?"),
-                "truncated_kind": info.get("truncated_kind"),
-                "hud_certain": info.get("hud_certain", True),
-            }
-            self._episodes.append(outcome)
-            kind = outcome["truncated_kind"] or outcome["end_reason"]
-            self._outcome_counts[kind] += 1
-            log.info(
-                "episode done: end_reason=%s truncated_kind=%s reward=%.2f len=%d",
-                outcome["end_reason"],
-                outcome["truncated_kind"],
-                ep["r"],
-                ep["l"],
-            )
-
-        # Only judge rates once the window has enough samples; early
-        # episodes are noisy and must not kill a run before the first update.
-        if len(self._episodes) >= self._min_episodes:
-            n = len(self._episodes)
-            fault_rate = sum(
-                1 for e in self._episodes if e["truncated_kind"] == "fault"
-            ) / n
-            ocr_uncertain_rate = sum(
-                1 for e in self._episodes if not e["hud_certain"]
-            ) / n
-            reason = should_abort(
-                fault_rate, ocr_uncertain_rate, time.time() - self._t0, self._cfg
-            )
-            if reason is not None:
-                self.abort_reason = reason
-                log.critical("ABORT: %s", reason)
+            if not np.all(np.isfinite(rewards)):
+                print("ABORT: non-finite reward detected", flush=True)
                 return False
+        # Fault-rate abort.
+        if len(self.fault_window) >= self.min_eps:
+            rate = sum(self.fault_window) / len(self.fault_window)
+            if rate > float(self.cfg.get("fault_rate", 0.20)):
+                print(
+                    f"ABORT: fault-truncated episode rate {rate:.2f} "
+                    f"over last {len(self.fault_window)} episodes",
+                    flush=True,
+                )
+                return False
+        # Wall-clock abort.
+        cap_h = float(self.cfg.get("wall_clock_hours", 72))
+        if (time.time() - self.t0) > cap_h * 3600:
+            print(f"ABORT: wall-clock cap {cap_h}h reached", flush=True)
+            return False
+        # Periodic status line (every ~2k steps).
+        if self.num_timesteps % 2000 == 0:
+            el = (time.time() - self.t0) / 3600
+            print(
+                f"[t+{el:.2f}h] steps={self.num_timesteps} "
+                f"ep={self.n_episodes} term={self.n_terminated} "
+                f"trunc={self.n_truncated} fault={self.n_fault}",
+                flush=True,
+            )
         return True
 
-    def outcome_summary(self) -> dict:
-        return dict(self._outcome_counts)
 
-
-# --------------------------------------------------------------------------- #
-# Model assembly
-# --------------------------------------------------------------------------- #
-def build_model(cfg: dict, vec_env, out_dir: Path, resume_path: str | None = None):
-    hyper = dict(cfg.get("hyperparams", {}))
-    tb_log = str(out_dir / "tb") if cfg.get("tensorboard") else None
-    if resume_path:
-        log.info("resuming from %s", resume_path)
-        model = PPO.load(resume_path, env=vec_env, tensorboard_log=tb_log)
-        # Refresh hyperparams that are safe to override post-load.
-        return model
-    return PPO(
-        cfg.get("policy", "CnnPolicy"),
-        vec_env,
-        verbose=1,
-        seed=int(cfg.get("seed", 0)),
-        tensorboard_log=tb_log,
-        **hyper,
-    )
+def find_latest_checkpoint(out: Path) -> Path | None:
+    ckpts = sorted(out.glob("*_steps.zip"))
+    if ckpts:
+        return ckpts[-1]
+    final = out / "final_model.zip"
+    return final if final.is_file() else None
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
-    parser = argparse.ArgumentParser(description="Train an RL agent to play a game.")
-    parser.add_argument("--config", default="configs/ruggrogue_ppo_v1.yaml")
-    parser.add_argument("--timesteps", type=int, default=None,
-                        help="Override total timesteps (smoke tests).")
-    parser.add_argument("--out", default="models")
-    parser.add_argument("--resume", default=None, help="Path to a .zip checkpoint to resume from.")
-    parser.add_argument("--seed", type=int, default=None, help="Override config seed.")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Train an SB3 agent on a browser game.")
+    ap.add_argument("--config", default="configs/ruggrogue_ppo_v1.yaml")
+    ap.add_argument("--timesteps", type=int, default=None)
+    ap.add_argument("--out", default="runs/ruggrogue-v1")
+    ap.add_argument("--resume", default=None, help="run dir to resume from")
+    args = ap.parse_args()
 
-    cfg = load_config(args.config)
-    total = args.timesteps if args.timesteps is not None else int(cfg["total_timesteps"])
-    if args.seed is not None:
-        cfg["seed"] = args.seed
+    cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    total = args.timesteps or int(cfg["total_timesteps"])
     out = Path(args.out)
-    (out / "checkpoints").mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
 
-    log.info("config=%s algo=%s env=%s policy=%s total_timesteps=%d",
-             args.config, cfg["algo"], cfg["env"], cfg.get("policy"), total)
+    # Game files must be served before the env boots its browser.
+    repo_root = Path(__file__).resolve().parents[3]
+    ensure_game_server(repo_root / "vendor" / "ruggrogue-web")
 
-    vec_env = build_env(cfg["env"], int(cfg.get("seed", 0)))
-    log.info("obs space after transpose: %s", vec_env.observation_space)
+    env_name = cfg["env"]
+    if env_name not in ENV_REGISTRY:
+        raise SystemExit(f"unknown env {env_name!r}; registered: {list(ENV_REGISTRY)}")
+    # Ticket 08: grayscale 84x84 uint8 HWC -> VecTransposeImage -> CHW for CnnPolicy.
+    env = VecTransposeImage(DummyVecEnv([lambda: AddChannelDim(ENV_REGISTRY[env_name]())]))
+    print(f"env={env_name} obs={env.observation_space} act={env.action_space}", flush=True)
 
-    model = build_model(cfg, vec_env, out, args.resume)
-    remaining = total - model.num_timesteps
-    if remaining <= 0:
-        log.info("already at %d timesteps >= target %d; nothing to do",
-                 model.num_timesteps, total)
-        return
+    hp = cfg.get("hyperparams", {})
+    tensorboard_log = str(out / "tb") if cfg.get("tensorboard") else None
 
-    checkpoint_cb = CheckpointCallback(
-        save_freq=int(cfg.get("checkpoint_freq", 10_000)),
-        save_path=str(out / "checkpoints"),
-        name_prefix="ruggrogue_ppo",
-    )
-    guard_cb = TrainingGuardCallback(cfg)
+    resume_from = None
+    if args.resume:
+        resume_from = find_latest_checkpoint(Path(args.resume))
+        if resume_from is None:
+            raise SystemExit(f"no checkpoint found in {args.resume}")
 
-    # B1-B4 surface as RuntimeError from the env: log loudly, never swallow.
+    if resume_from:
+        print(f"resuming from {resume_from}", flush=True)
+        model: BaseAlgorithm = PPO.load(
+            resume_from, env=env, tensorboard_log=tensorboard_log
+        )
+        # Continue counting from the checkpoint's step.
+        already = model.num_timesteps
+        remaining = max(0, total - already)
+        print(f"already={already} remaining={remaining}", flush=True)
+    else:
+        model = PPO(
+            cfg.get("policy", "CnnPolicy"),
+            env,
+            learning_rate=hp.get("learning_rate", 3e-4),
+            n_steps=hp.get("n_steps", 1024),
+            batch_size=hp.get("batch_size", 64),
+            n_epochs=hp.get("n_epochs", 10),
+            gamma=hp.get("gamma", 0.99),
+            gae_lambda=hp.get("gae_lambda", 0.95),
+            clip_range=hp.get("clip_range", 0.2),
+            ent_coef=hp.get("ent_coef", 0.0),
+            seed=cfg.get("seed", 0),
+            tensorboard_log=tensorboard_log,
+            verbose=1,
+        )
+        remaining = total
+
+    if tensorboard_log:
+        configure(tensorboard_log, ["tensorboard"])
+
+    callbacks = [
+        CheckpointCallback(
+            save_freq=int(cfg.get("checkpoint_freq", 10_000)),
+            save_path=str(out / "checkpoints"),
+            name_prefix="ppo_ruggrogue",
+        ),
+        AbortMonitor(cfg.get("abort", {})),
+    ]
     try:
-        model.learn(total_timesteps=remaining, callback=[checkpoint_cb, guard_cb])
-    except RuntimeError as exc:
-        log.critical("ABORT: unrecoverable env failure: %s", exc)
-        sys.exit(2)
-
-    final_path = out / "final_model.zip"
-    model.save(str(final_path))
-    log.info("saved %s timesteps=%d outcomes=%s abort_reason=%s",
-             final_path, model.num_timesteps, guard_cb.outcome_summary(),
-             guard_cb.abort_reason)
-    if guard_cb.abort_reason:
-        sys.exit(3)
+        model.learn(total_timesteps=remaining, callback=callbacks, reset_num_timesteps=False)
+    except KeyboardInterrupt:
+        print("interrupted by user; saving ...", flush=True)
+    finally:
+        model.save(out / "final_model")
+        print(f"saved final model to {out / 'final_model.zip'}", flush=True)
+        env.close()
 
 
 if __name__ == "__main__":
