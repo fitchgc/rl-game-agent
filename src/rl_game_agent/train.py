@@ -25,7 +25,7 @@ from stable_baselines3.common.callbacks import (
     CheckpointCallback,
 )
 from stable_baselines3.common.logger import configure
-from stable_baselines3.common.vec_env import DummyVecEnv, VecTransposeImage
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecTransposeImage
 
 from rl_game_agent.envs import ENV_REGISTRY
 
@@ -158,15 +158,23 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     # Game files must be served before the env boots its browser.
-    repo_root = Path(__file__).resolve().parents[3]
+    # train.py lives at src/rl_game_agent/train.py -> parents[2] is the repo root.
+    repo_root = Path(__file__).resolve().parents[2]
     ensure_game_server(repo_root / "vendor" / "ruggrogue-web")
 
     env_name = cfg["env"]
     if env_name not in ENV_REGISTRY:
         raise SystemExit(f"unknown env {env_name!r}; registered: {list(ENV_REGISTRY)}")
     # Ticket 08: grayscale 84x84 uint8 HWC -> VecTransposeImage -> CHW for CnnPolicy.
-    env = VecTransposeImage(DummyVecEnv([lambda: AddChannelDim(ENV_REGISTRY[env_name]())]))
-    print(f"env={env_name} obs={env.observation_space} act={env.action_space}", flush=True)
+    # num_envs > 1 uses SubprocVecEnv (one headless Chromium per env).
+    num_envs = int(cfg.get("num_envs", 1))
+
+    def _make_wrapped():
+        return AddChannelDim(ENV_REGISTRY[env_name]())
+
+    vec = SubprocVecEnv([_make_wrapped for _ in range(num_envs)]) if num_envs > 1 else DummyVecEnv([_make_wrapped])
+    env = VecTransposeImage(vec)
+    print(f"env={env_name} num_envs={num_envs} obs={env.observation_space} act={env.action_space}", flush=True)
 
     hp = cfg.get("hyperparams", {})
     tensorboard_log = str(out / "tb") if cfg.get("tensorboard") else None

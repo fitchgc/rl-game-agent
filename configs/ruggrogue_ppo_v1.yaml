@@ -5,6 +5,10 @@ env: ruggrogue-v1
 policy: CnnPolicy
 total_timesteps: 200_000
 checkpoint_freq: 10_000
+# Parallel envs (one headless Chromium each). 1 = single env (default, per
+# ticket 08 decision: start single, raise after the 10k-step calibration).
+# Measured on 2-core VM: 1 env ~1.0 step/s, 2 envs 1.78 step/s, 4 envs 2.11 step/s.
+num_envs: 1
 tensorboard: true
 hyperparams:
   learning_rate: 3.0e-4
