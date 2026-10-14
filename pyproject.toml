@@ -8,8 +8,13 @@ dependencies = [
     "stable-baselines3[extra]>=2.0",
     "gymnasium>=0.29",
     "numpy",
+    "pillow",
+    "playwright",
     "pyyaml",
 ]
+
+[tool.setuptools.package-data]
+"rl_game_agent.envs.data.templates" = ["*.png"]
 
 [project.optional-dependencies]
 dev = [
