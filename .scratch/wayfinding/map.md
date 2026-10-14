@@ -44,6 +44,7 @@ Labels: wayfinder:map
   - 地图：`.scratch/wayfinding/map.md`
   - 子票：`.scratch/wayfinding/issues/NN-<slug>.md`
 - 此阶段只做路线决策，不做实现；尚未选定具体游戏、截图后端或算法。
+- [首游候选短名单（01-game-shortlist，已 resolved）](.scratch/wayfinding/issues/01-game-shortlist.md)：按 02 号票约束（仅网页、roguelike、回合制优先、无头+Xvfb、纯 CPU、几天预算）排序为 ① DCSS 自建 webtiles Sprint（morgue 局末奖励，复杂度最高）→ ② ruggrogue web（MIT、可本地静态托管、最轻）→ ③ Desktop Dungeons HTML5（第三方转换版，备选）；上一轮 Atari/Dino/ViZDoom 因不符合新约束淘汰；三者均待本机闭环验证，待用户确认复杂度/简单度/第三方版接受度及 Docker+浏览器安装意愿。
 - [运行与资源边界已确认](.scratch/wayfinding/issues/02-operating-envelope.md)：VM 无头 Linux + Xvfb，无 GPU（纯 CPU），墙钟预算几天；第一阶段只做网页游戏（浏览器自动化可接受），类型先用 roguelike。
 
 ## Not yet specified
