@@ -18,3 +18,15 @@
 
 - 07 号票（本 VM 短程冒烟）即为"流程可行性"的主验证；本票验证"启动包可移植"。
 - 72h 墙钟中止线保留在配置说明中，供 GPU 机器参考。
+
+## 并行 env 吞吐实测（2026-10-14，本 VM：2 核 / 7.7GB）
+
+`.scratch/ruggrogue-v1/probes/throughput_probe.py`（SubprocVecEnv，每 env 独立 Chromium）：
+
+| env 数 | 总吞吐 | 单 env |
+|---|---|---|
+| 1 | ~1.0 step/s | ~1.0 |
+| 2 | 1.78 step/s | 0.89 |
+| 4 | 2.11 step/s | 0.53 |
+
+结论：2 核上 2 env 是甜点（~1.8×），4 env 收益锐减（CPU 饱和）。GPU 机器核数多，应能接近线性扩展，建议从 4 env 起测。200k 步耗时估算：1 env ≈ 55.6h；2 env ≈ 31h（本 VM 实测）；4+ env 在多核机器上按实测另算。注意 SB3 on-policy 按 `n_steps × num_envs` 做整 rollout，`total_timesteps` 是下界（实测 2500 步跑到 3025 步才停）。
