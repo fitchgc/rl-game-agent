@@ -1,0 +1,25 @@
+# ruggrogue v1 PPO training config (wayfinder ticket 08 decision).
+# First-gen: PPO + CnnPolicy (NatureCNN). DQN is the named fallback.
+algo: PPO
+env: ruggrogue-v1
+policy: CnnPolicy
+total_timesteps: 400_000
+checkpoint_freq: 10_000
+tensorboard: true
+hyperparams:
+  learning_rate: 3.0e-4
+  n_steps: 1024
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+seed: 0
+# Abort rules (ticket 08): fault truncated rate / OCR uncertain rate over a
+# sliding window, non-finite reward/loss, wall-clock cap.
+abort:
+  fault_rate: 0.20
+  fault_window_episodes: 50
+  ocr_uncertain_rate: 0.30
+  wall_clock_hours: 72

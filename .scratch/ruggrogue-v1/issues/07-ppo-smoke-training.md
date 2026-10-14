@@ -4,7 +4,7 @@
 
 **Blocked by:** 06 (接通奖励与回合结算).
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] 使用 PPO `CnnPolicy`、单 env、`n_steps=1024` 和单帧灰度 `84×84`；至少完成两个 rollout 及参数更新，无 observation shape、dtype 或通道顺序错误。
 - [ ] 生成 TensorBoard 日志和模型文件；加载模型后可对独立新局预测并执行动作。
