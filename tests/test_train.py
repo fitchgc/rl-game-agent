@@ -107,6 +107,20 @@ def test_guard_aborts_on_fault_storm():
     assert model.num_timesteps < 500
 
 
+def test_guard_waits_for_min_episodes():
+    # 100% fault but fewer than min_episodes(10): no abort yet.
+    vec = _tiny_vec(fault=True)
+    model = build_model(
+        {"policy": "CnnPolicy", "hyperparams": {"n_steps": 8}, "seed": 0},
+        vec,
+        __import__("pathlib").Path("/tmp"),
+    )
+    guard = TrainingGuardCallback(CFG)
+    model.learn(total_timesteps=8, callback=guard)
+    assert guard.abort_reason is None
+    assert model.num_timesteps == 8
+
+
 def test_guard_passes_clean_run():
     vec = _tiny_vec(fault=False)
     model = build_model(

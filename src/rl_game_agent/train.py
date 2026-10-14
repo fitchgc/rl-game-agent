@@ -110,6 +110,7 @@ class TrainingGuardCallback(BaseCallback):
         super().__init__(verbose)
         abort = cfg.get("abort", {}) or {}
         self._window = int(abort.get("fault_window_episodes", 50))
+        self._min_episodes = int(abort.get("min_episodes", 10))
         self._episodes: deque[dict] = deque(maxlen=self._window)
         self._cfg = cfg
         self._t0 = time.time()
@@ -145,7 +146,9 @@ class TrainingGuardCallback(BaseCallback):
                 ep["l"],
             )
 
-        if self._episodes:
+        # Only judge rates once the window has enough samples; early
+        # episodes are noisy and must not kill a run before the first update.
+        if len(self._episodes) >= self._min_episodes:
             n = len(self._episodes)
             fault_rate = sum(
                 1 for e in self._episodes if e["truncated_kind"] == "fault"
