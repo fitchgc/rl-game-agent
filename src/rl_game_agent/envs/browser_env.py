@@ -331,7 +331,10 @@ class BrowserGameEnv(Env):
             shot = self._shot()
             hud = self.adapter.read_hud(shot)
 
-        # -- adapter frame hook (reward/termination structure; 06 fills formula)
+        # -- adapter frame hook (reward/termination structure; ticket 06 formula).
+        # The confirmed post-action shot travels in ctx so the adapter can
+        # classify the game-over screen (victory vs death) without changing
+        # the on_frame signature.
         frame = self.adapter.on_frame(
             pre_hud,
             hud,
@@ -342,6 +345,7 @@ class BrowserGameEnv(Env):
                 "end_reason": end_reason,
                 "fault": fault,
                 "dialog_seen": dialog_seen,
+                "shot": shot,
             },
         )
 
@@ -352,7 +356,8 @@ class BrowserGameEnv(Env):
         info = self._info(
             hud,
             phase="GAMEOVER" if terminated else "DUNGEON",
-            truncated_kind=truncated_kind,
+            truncated_kind=truncated_kind
+            or frame.get("diag", {}).get("truncated_kind"),
             end_reason=end_reason or frame.get("reason"),
             dialog_seen=dialog_seen,
             sync_latency_ms=sync_latency_ms,
