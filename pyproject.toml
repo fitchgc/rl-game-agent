@@ -1,0 +1,28 @@
+[project]
+name = "rl-game-agent"
+version = "0.1.0"
+description = "Train RL agents (stable-baselines3) that play games automatically"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "stable-baselines3[extra]>=2.0",
+    "gymnasium>=0.29",
+    "numpy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
