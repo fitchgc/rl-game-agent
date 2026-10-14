@@ -1,6 +1,6 @@
 Labels: wayfinder:research
 Type: research
-Status: open
+Status: claimed
 Blocked by: 无
 Mode: AFK
 

@@ -44,6 +44,7 @@ Labels: wayfinder:map
   - 地图：`.scratch/wayfinding/map.md`
   - 子票：`.scratch/wayfinding/issues/NN-<slug>.md`
 - 此阶段只做路线决策，不做实现；尚未选定具体游戏、截图后端或算法。
+- [运行与资源边界已确认](.scratch/wayfinding/issues/02-operating-envelope.md)：VM 无头 Linux + Xvfb，无 GPU（纯 CPU），墙钟预算几天；第一阶段只做网页游戏（浏览器自动化可接受），类型先用 roguelike。
 
 ## Not yet specified
 
