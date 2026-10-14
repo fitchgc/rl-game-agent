@@ -12,6 +12,7 @@ venv/
 runs/
 models/
 logs/
+artifacts/
 *.zip
 
 # Tooling
