@@ -46,6 +46,7 @@ Labels: wayfinder:map
 - 此阶段只做路线决策，不做实现；尚未选定具体游戏、截图后端或算法。
 - [首游候选短名单（01-game-shortlist，已 resolved）](.scratch/wayfinding/issues/01-game-shortlist.md)：按 02 号票约束（仅网页、roguelike、回合制优先、无头+Xvfb、纯 CPU、几天预算）排序为 ① DCSS 自建 webtiles Sprint（morgue 局末奖励，复杂度最高）→ ② ruggrogue web（MIT、可本地静态托管、最轻）→ ③ Desktop Dungeons HTML5（第三方转换版，备选）；上一轮 Atari/Dino/ViZDoom 因不符合新约束淘汰；三者均待本机闭环验证，待用户确认复杂度/简单度/第三方版接受度及 Docker+浏览器安装意愿。
 - [运行与资源边界已确认](.scratch/wayfinding/issues/02-operating-envelope.md)：VM 无头 Linux + Xvfb，无 GPU（纯 CPU），墙钟预算几天；第一阶段只做网页游戏（浏览器自动化可接受），类型先用 roguelike。
+- [首个目标游戏已选定：ruggrogue v1.0.1（03-first-game，已 resolved）](.scratch/wayfinding/issues/03-first-game.md)：tung/ruggrogue，MIT，回合制纯键盘；版本固定 v1.0.1（tag 9f7ffd5c）；运行模式为自托管静态文件 + Playwright/Chromium + Xvfb；重置流程干净（死亡→Enter→标题→Enter，全新 context 无存档）；奖励信号来自 HUD 与结算屏（OCR 友好）。DCSS 因用户否决 Docker 淘汰，DD 因第三方旧转换风险淘汰。残余风险：自托管缺 `ruggrogue.wasm`+`deps/ruggrogue.data`（04/实现期验证）、输入延迟与单局吞吐待测。
 
 ## Not yet specified
 
